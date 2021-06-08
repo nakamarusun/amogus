@@ -7,7 +7,7 @@
 #include <string.h>
 
 #define PORT 8080
-#define BUFLEN 4
+#define BUFLEN 2
 
 void p_err(const char* err) {
     perror(err);
@@ -48,15 +48,84 @@ void r_file(const char* file) {
         p_err("Wrong syn message");
     printf("UDP syn accepted\n");
 
-    // Get self ip
+    // Gets the address of the client
     struct in_addr ip_addr = u_cliaddr.sin_addr; // TODO: MIGHT BE AN ERROR
     char self_ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &ip_addr, self_ip, INET_ADDRSTRLEN);
+    printf("Source IP: %s\n", self_ip);
 
-    sendto(u_sock_fd, (const char *)self_ip, INET_ADDRSTRLEN, 
-        MSG_CONFIRM, (const struct sockaddr *) &u_cliaddr,
-            len);
+    // // Send UDP all clear OPTIONAL
+    // sendto(u_sock_fd, (const char *)self_ip, INET_ADDRSTRLEN, 
+    //     MSG_CONFIRM, (const struct sockaddr *) &u_cliaddr,
+    //         len);
 
+    /**
+     * TCP send time
+     */
+    struct sockaddr_in s_address;
+    int s_sock_fd;
+
+    // Creates the socket and gets the file descriptor
+    s_sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    // Error
+    if (s_sock_fd == -1)
+        p_err("Error in creating socket file descriptor");
+
+    s_address.sin_family = AF_INET;
+    s_address.sin_port = htons( PORT );
+
+    // Convert string ipv4 ip address to c form
+    if(inet_pton(AF_INET, self_ip, &s_address.sin_addr) <= 0)
+        p_err("Invalid address");
+
+    // Connect to the received address
+    if (connect(s_sock_fd, (struct sockaddr *)&s_address, sizeof(s_address)) < 0)
+        p_err("Error connecting");
+    
+
+    // Create buffer
+    char file_buf[BUFLEN] = {0};
+    int ch_r = 5;
+
+    // Receive chunks and write it into the selected file
+    while ((ch_r = read(s_sock_fd, file_buf, BUFLEN)) > 0) {
+        // printf("Lole: %s\n", file_buf);
+        fwrite(file_buf, 1, ch_r, f);
+    }
+    
+    fclose(f);
+}
+
+void s_file(const char* file) {
+
+    // Check if file exists first
+    FILE* f = fopen(file, "rb");
+    if (f == NULL)
+        p_err("Error opening file");
+
+    /**
+     * Creates UDP broadcast sender
+     */
+    int u_sock_fd;
+    struct sockaddr_in u_address;
+
+    // Make socket for broadcast
+    if ((u_sock_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+        p_err("Error creating UDP sock");
+
+    u_address.sin_family = AF_INET;
+    u_address.sin_port = htons(PORT);
+    u_address.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+
+    // Get permission to send broadcast packet
+    int broadcast = 1;
+    if (setsockopt(u_sock_fd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) != 0)
+        p_err("Failed getting broadcast permission");
+
+    /**
+     * Creates TCP socket listener
+     */
     struct sockaddr_in s_address;
     int s_sock_fd, s_in_sock;
     int s_addrlen = sizeof(s_address);
@@ -78,6 +147,7 @@ void r_file(const char* file) {
     s_address.sin_addr.s_addr = INADDR_ANY;
     s_address.sin_port = htons( PORT );
 
+    // Back to TCP
     // Bind the socket to the address
     if (bind(s_sock_fd, (struct sockaddr *)&s_address, sizeof(s_address)) < 0)
         p_err("Error binding socket");
@@ -86,84 +156,23 @@ void r_file(const char* file) {
     if (listen(s_sock_fd, 3) < 0) 
         p_err("Error listening");
 
-    // Accepts new connection
+    // Broadcast UDP message
+    sendto(u_sock_fd, "abcd", 4, 0, (const struct sockaddr*)&u_address, sizeof(u_address));
+    
+    // Accepts new TCP connection immediately
     s_in_sock = accept(s_sock_fd, (struct sockaddr *)&s_address, (socklen_t*)&s_addrlen);
     if (s_in_sock < 0)
         p_err("Error accepting new connection");
 
-    // Create buffer
+
+    // Create file buffer
     char file_buf[BUFLEN] = {0};
     int ch_r;
-
-    while ((ch_r = read(s_in_sock, file_buf, BUFLEN)) > 0) {
-        printf("Lole: %s\n", file_buf);
-        fwrite(file_buf, 1, ch_r, f);
-    }
-
-    fclose(f);
-}
-
-void s_file(const char* file) {
-
-    // Check if file exists first
-    FILE* f = fopen(file, "rb");
-    if (f == NULL)
-        p_err("Error opening file");
-
-    int u_sock_fd;
-    struct sockaddr_in u_address;
-
-    // Make socket
-    if ((u_sock_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) 
-        p_err("Error creating UDP sock");
-
-    u_address.sin_family = AF_INET;
-    u_address.sin_port = htons(PORT);
-    u_address.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-
-    // Get permission to send broadcast packet
-    int broadcast = 1;
-    if (setsockopt(u_sock_fd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) != 0)
-        p_err("Failed getting broadcast permission");
-
-    // Send syn
-    sendto(u_sock_fd, "abcd", 4, 0, (const struct sockaddr*)&u_address, sizeof(u_address));
-    char ip_dest[INET_ADDRSTRLEN];
-    int len;
-    int n = recvfrom(u_sock_fd, (char *)ip_dest, INET_ADDRSTRLEN, MSG_WAITALL, (struct sockaddr*)&u_address, &len);
-    ip_dest[n] = '\0';
-    printf("Found at: %s\n", ip_dest);
-
-    // TCP time
-    struct sockaddr_in s_address;
-    int s_sock_fd;
-
-    // Creates the socket and gets the file descriptor
-    s_sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-
-    // Error
-    if (s_sock_fd == -1)
-        p_err("Error in creating socket file descriptor");
-
-    s_address.sin_family = AF_INET;
-    s_address.sin_port = htons( PORT );
-
-    // Convert string ipv4 ip address to c form
-    if(inet_pton(AF_INET, ip_dest, &s_address.sin_addr) <= 0)
-        p_err("Invalid address");
-
-    // Connect to the received address
-    if (connect(s_sock_fd, (struct sockaddr *)&s_address, sizeof(s_address)) < 0)
-        p_err("Error connecting");
-
-
-    int ch_r;
-    char file_buf[BUFLEN] = {0};
 
     // Sends the file in chunks of BUFLEN
     while ((ch_r = fread(file_buf, 1, BUFLEN, f)) > 0) {
-        printf("Lole(%d): %s\n", ch_r, file_buf);
-        send(s_sock_fd, file_buf, ch_r, 0);
+        // printf("Lole(%d): %s\n", ch_r, file_buf);
+        send(s_in_sock, file_buf, ch_r, 0);
     }
 
     fclose(f);
@@ -195,3 +204,4 @@ int main(int argc, char const *argv[]) {
 
     return 0;
 }
+
